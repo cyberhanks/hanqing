@@ -6,8 +6,11 @@ export async function getPoliticians(party?: string): Promise<Politician[]> {
   let query = supabase.from('politicians').select('*').order('trust_score', { ascending: false })
   if (party && party !== 'ALL') query = query.eq('party', party)
   const { data, error } = await query
-  if (error) throw error
-  return data as Politician[]
+  if (error) {
+    console.error('[getPoliticians] Supabase error:', error.message)
+    return []
+  }
+  return (data ?? []) as Politician[]
 }
 
 export async function getPolitician(id: string): Promise<Politician | null> {
