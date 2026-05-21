@@ -1,0 +1,40 @@
+name: 每日資料收集
+
+on:
+  schedule:
+    - cron: '0 18 * * *'  # 台灣時間 02:00（UTC+8）
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安裝依賴
+        run: |
+          cd pipeline
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: 執行資料收集
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd pipeline
+          python main.py
+
+      - name: 上傳日誌
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-logs-${{ github.run_id }}
+          path: pipeline/logs/
+          retention-days: 7
