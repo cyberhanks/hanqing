@@ -1,6 +1,7 @@
 """
-立法院公報 PDF 下載器
-來源：https://ppg.ly.gov.tw/ppg/
+立法院公報 / 議事文件 PDF 下載器
+主要資料來源：data.ly.gov.tw Open Data API
+備用來源：ppg.ly.gov.tw 公報網站
 """
 import time
 import random
@@ -9,75 +10,104 @@ from pathlib import Path
 from loguru import logger
 from bs4 import BeautifulSoup
 
-# 立法院公報系統 - 多個備用入口（依優先順序）
-GAZETTE_URLS = [
-    "https://ppg.ly.gov.tw/ppg/PublicationLayout/publicationList",
-    "https://ppg.ly.gov.tw/ppg/publications/download/list",
-    "https://ppg.ly.gov.tw/ppg/",
-    "https://lci.ly.gov.tw/LyLCEW/agenda1/02/pdf/",
-]
 DOWNLOAD_DIR = Path("data/gazettes")
 
-# CSS selectors to try for PDF links on different page layouts
-PDF_SELECTORS = [
-    "a[href$='.pdf']",
-    "a[href*='/pdf/']",
-    "a[href*='PublicationLayout'][href*='pdf']",
-    "table a[href]",
+# LY Open Data API — dataset id=4 為「委員發言」，含 pdfUrl
+LY_OPENDATA_API = "https://data.ly.gov.tw/odw/openDatasetJson.action"
+
+# 備用：直接從公報網站抓
+GAZETTE_FALLBACK_URLS = [
+    "https://ppg.ly.gov.tw/ppg/",
+    "https://ppg.ly.gov.tw/ppg/PublicationLayout/publicationList",
 ]
 
 
-def fetch_recent_gazettes(days: int = 7) -> list[dict]:
-    """下載最近 N 天的立法院公報 PDF，自動嘗試多個備用入口"""
-    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info(f"開始下載最近 {days} 天公報")
+def _fetch_via_opendata_api(limit: int = 10) -> list[dict]:
+    """從 data.ly.gov.tw API 取得最近議事文件 PDF 連結"""
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Encoding": "identity",
+        "Accept": "application/json",
+    }
+    # Dataset 4 = 委員發言（含 pdfUrl）；Dataset 6 = 質詢文件
+    results = []
+    for dataset_id in [4, 6]:
+        try:
+            r = requests.get(
+                LY_OPENDATA_API,
+                params={"id": dataset_id, "filterParam": "", "offset": 0, "limit": limit},
+                headers=headers,
+                timeout=20,
+                verify=False,
+            )
+            r.raise_for_status()
+            items = r.json().get("jsonList", [])
+            for item in items:
+                pdf_url = item.get("pdfUrl") or item.get("docUrl", "")
+                if pdf_url and pdf_url.endswith(".pdf"):
+                    results.append({
+                        "url": pdf_url,
+                        "dataset": dataset_id,
+                        "term": item.get("term", ""),
+                        "session": item.get("selectTerm", ""),
+                    })
+            logger.info(f"API dataset {dataset_id}: 取得 {len(items)} 筆，{sum(1 for i in items if i.get('pdfUrl'))} 個 PDF")
+        except Exception as e:
+            logger.warning(f"API dataset {dataset_id} 失敗：{e}")
 
+    return results
+
+
+def _fetch_via_scraping() -> list[dict]:
+    """備用：從公報網站爬取 PDF 連結"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
         "Accept-Encoding": "identity",
     }
-
-    links_found = []
-
-    for base_url in GAZETTE_URLS:
-        logger.info(f"嘗試入口：{base_url}")
+    for base_url in GAZETTE_FALLBACK_URLS:
         try:
             resp = requests.get(base_url, headers=headers, timeout=30, verify=False)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "lxml")
-
-            # Try each selector until we find PDF links
-            for selector in PDF_SELECTORS:
-                found = soup.select(selector)
-                pdf_links = [a for a in found if a.get("href", "").endswith(".pdf")
-                             or "/pdf/" in a.get("href", "")]
-                if pdf_links:
-                    logger.info(f"在 {base_url} 找到 {len(pdf_links)} 個 PDF 連結（selector: {selector}）")
-                    links_found = pdf_links[:10]
-                    break
-
-            if links_found:
-                break  # Stop trying fallback URLs once we have links
-
+            links = soup.select("a[href$='.pdf']")
+            if links:
+                logger.info(f"備用來源 {base_url}：找到 {len(links)} 個 PDF 連結")
+                return [{"url": a.get("href", "")} for a in links[:10] if a.get("href")]
         except Exception as e:
-            logger.warning(f"入口失敗：{base_url} — {e}")
-            continue
+            logger.warning(f"備用來源失敗：{base_url} — {e}")
+    return []
 
-    if not links_found:
-        logger.error("所有入口均無法取得公報 PDF 連結")
+
+def fetch_recent_gazettes(days: int = 7) -> list[dict]:
+    """
+    下載最近 N 天的立法院議事文件 PDF。
+    優先使用 data.ly.gov.tw Open Data API，失敗時退回公報網站爬蟲。
+    """
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"開始下載最近 {days} 天公報")
+
+    # 1. 嘗試 Open Data API
+    pdf_items = _fetch_via_opendata_api(limit=days * 2)
+
+    # 2. 若 API 無結果，嘗試爬蟲
+    if not pdf_items:
+        logger.warning("Open Data API 無結果，嘗試備用爬蟲")
+        pdf_items = _fetch_via_scraping()
+
+    if not pdf_items:
+        logger.error("所有來源均無法取得公報 PDF 連結")
         return []
 
+    # 3. 下載 PDF 檔案
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
     downloaded = []
-    for link in links_found:
-        pdf_url = link.get("href", "")
+
+    for item in pdf_items[:days * 2]:
+        pdf_url = item.get("url", "")
         if not pdf_url:
             continue
         if not pdf_url.startswith("http"):
-            # Resolve relative URL
-            base = "https://ppg.ly.gov.tw"
-            pdf_url = base + ("" if pdf_url.startswith("/") else "/") + pdf_url
+            pdf_url = "https://ppg.ly.gov.tw" + pdf_url
 
         filename = pdf_url.split("/")[-1].split("?")[0]
         if not filename.endswith(".pdf"):
@@ -92,10 +122,14 @@ def fetch_recent_gazettes(days: int = 7) -> list[dict]:
         try:
             pdf_resp = requests.get(pdf_url, headers=headers, timeout=60, verify=False)
             pdf_resp.raise_for_status()
+            if not pdf_resp.headers.get("Content-Type", "").startswith("application/pdf"):
+                logger.warning(f"非 PDF 回應，跳過：{filename}")
+                continue
             save_path.write_bytes(pdf_resp.content)
+            size_kb = len(pdf_resp.content) // 1024
             downloaded.append({"filename": filename, "path": str(save_path), "url": pdf_url})
-            logger.success(f"下載：{filename} ({len(pdf_resp.content)//1024} KB)")
-            time.sleep(random.uniform(2, 4))
+            logger.success(f"下載：{filename} ({size_kb} KB)")
+            time.sleep(random.uniform(1, 2))
         except Exception as e:
             logger.error(f"下載失敗：{filename} — {e}")
 
