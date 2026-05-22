@@ -13,7 +13,10 @@ from config import supabase
 from loguru import logger
 
 LY_API = "https://data.ly.gov.tw/odw/openDatasetJson.action"
-TERMS = list(range(5, 11))   # 第 5~10 屆
+# 只抓最新一屆（第 10 屆）
+# 歷史屆期（5-9）資料量龐大（40萬筆以上）需逐頁掃描，效益低
+# 待日後 LY 提供分屆 API endpoint 再補
+TERMS = [10]
 
 SPEECH_DATASET   = 4
 INTERP_DATASET   = 6
@@ -51,30 +54,53 @@ def _fetch_dataset(dataset_id: int, term: int, offset: int = 0) -> list[dict]:
         return []
 
 
-def _fetch_all_for_term(dataset_id: int, term: int) -> list[dict]:
-    """分頁抓取所有屆期資料"""
+def _fetch_all_for_term(dataset_id: int, term: int,
+                         max_pages: int = 50) -> list[dict]:
+    """
+    分頁抓取，過濾指定屆期。
+    max_pages: 最多抓幾頁（避免抓超久）
+    第 10 屆資料約在最前面，通常 10 頁以內就找完
+    """
     results = []
     offset = 0
-    while True:
+    consecutive_empty = 0   # 連續幾頁完全沒有該屆資料就停
+
+    for _ in range(max_pages):
         params = {
             "id": dataset_id, "filterParam": "",
             "offset": offset, "limit": PAGE_SIZE,
         }
         try:
-            r = requests.get(LY_API, params=params, headers=LY_HEADERS, timeout=30, verify=False)
+            r = requests.get(LY_API, params=params, headers=LY_HEADERS,
+                             timeout=60, verify=False)
             r.raise_for_status()
             items = r.json().get("jsonList", []) or []
         except Exception as e:
             logger.warning(f"LY API 失敗 id={dataset_id} offset={offset}: {e}")
-            break
+            # 自動重試一次
+            time.sleep(5)
+            try:
+                r = requests.get(LY_API, params=params, headers=LY_HEADERS,
+                                 timeout=60, verify=False)
+                items = r.json().get("jsonList", []) or []
+            except Exception:
+                break
 
         matched = [x for x in items if str(x.get("term", "")).strip() == str(term)]
         results.extend(matched)
 
+        if not matched:
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                logger.debug(f"  連續 3 頁無第 {term} 屆資料，停止")
+                break
+        else:
+            consecutive_empty = 0
+
         if len(items) < PAGE_SIZE:
-            break   # 最後一頁
+            break
         offset += PAGE_SIZE
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     return results
 

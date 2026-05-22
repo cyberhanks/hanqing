@@ -12,7 +12,7 @@ from config import supabase
 from loguru import logger
 
 LY_API   = "https://data.ly.gov.tw/odw/openDatasetJson.action"
-TERMS    = list(range(5, 11))
+TERMS    = [10]   # 只抓第 10 屆（現任）
 PAGE_SIZE = 1000
 
 PROPOSE_DATASET = 14
@@ -29,28 +29,38 @@ LY_HEADERS = {
 }
 
 
-def _fetch_all_for_term(dataset_id: int, term: int) -> list[dict]:
+def _fetch_all_for_term(dataset_id: int, term: int, max_pages: int = 50) -> list[dict]:
     results = []
     offset = 0
-    while True:
+    consecutive_empty = 0
+
+    for _ in range(max_pages):
         try:
             r = requests.get(LY_API, params={
                 "id": dataset_id, "filterParam": "",
                 "offset": offset, "limit": PAGE_SIZE,
-            }, headers=LY_HEADERS, timeout=30, verify=False)
+            }, headers=LY_HEADERS, timeout=60, verify=False)
             r.raise_for_status()
             items = r.json().get("jsonList", []) or []
         except Exception as e:
             logger.warning(f"LY API 失敗 id={dataset_id} offset={offset}: {e}")
+            time.sleep(5)
             break
 
         matched = [x for x in items if str(x.get("term", "")).strip() == str(term)]
         results.extend(matched)
 
+        if not matched:
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                break
+        else:
+            consecutive_empty = 0
+
         if len(items) < PAGE_SIZE:
             break
         offset += PAGE_SIZE
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     return results
 
