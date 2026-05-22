@@ -111,18 +111,23 @@ def collect_wikipedia_controversies(politicians: list[dict] | None = None):
 
         # 取得完整 wiki 頁面 wikitext
         try:
+            headers = {"User-Agent": "HanQingBot/1.0 (https://hanqing.vercel.app; contact@hanqing.tw)"}
             r = requests.get(WIKI_FULL, params={
                 "action": "query",
                 "titles": name,
                 "prop": "revisions",
                 "rvprop": "content",
+                "rvslots": "main",
                 "format": "json",
                 "formatversion": 2,
-            }, timeout=15)
-            pages = r.json().get("query", {}).get("pages", [])
-            if not pages:
+            }, headers=headers, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            pages = data.get("query", {}).get("pages", [])
+            if not pages or pages[0].get("missing"):
                 continue
-            content = pages[0].get("revisions", [{}])[0].get("content", "")
+            slots = pages[0].get("revisions", [{}])[0].get("slots", {})
+            content = slots.get("main", {}).get("content", "")
         except Exception as e:
             logger.warning(f"Wiki 取得失敗 {name}: {e}")
             continue
