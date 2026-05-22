@@ -93,8 +93,19 @@ ALTER TABLE subscriptions       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE api_keys            ENABLE ROW LEVEL SECURITY;
 
 -- 公開讀取政治獻金與財產（匿名查詢）
-CREATE POLICY IF NOT EXISTS "donations_public_read"
-  ON donations FOR SELECT USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'donations' AND policyname = 'donations_public_read'
+  ) THEN
+    CREATE POLICY "donations_public_read" ON donations FOR SELECT USING (true);
+  END IF;
 
-CREATE POLICY IF NOT EXISTS "assets_public_read"
-  ON asset_declarations FOR SELECT USING (true);
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'asset_declarations' AND policyname = 'assets_public_read'
+  ) THEN
+    CREATE POLICY "assets_public_read" ON asset_declarations FOR SELECT USING (true);
+  END IF;
+END $$;

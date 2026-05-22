@@ -47,3 +47,5 @@ pipeline/logs/
 pipeline/**/__pycache__/
 pipeline/**/*.pyc
 __pycache__/
+
+.vercel
