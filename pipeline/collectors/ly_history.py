@@ -24,13 +24,15 @@ PAGE_SIZE = 1000
 
 def _fetch_dataset(dataset_id: int, term: int, page: int = 1) -> list[dict]:
     try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         params = {
             "id": dataset_id,
             "selectTerm": term,
             "page": page,
             "limit": PAGE_SIZE,
         }
-        r = requests.get(LY_API, params=params, timeout=30)
+        r = requests.get(LY_API, params=params, timeout=30, verify=False)
         r.raise_for_status()
         data = r.json()
         return data.get("jsonList", []) or []

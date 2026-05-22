@@ -21,10 +21,12 @@ COSIGN_DATASET  = 16
 
 def _fetch(dataset_id: int, term: int, page: int = 1) -> list[dict]:
     try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         r = requests.get(LY_API, params={
             "id": dataset_id, "selectTerm": term,
             "page": page, "limit": PAGE_SIZE,
-        }, timeout=30)
+        }, timeout=30, verify=False)
         r.raise_for_status()
         return r.json().get("jsonList", []) or []
     except Exception as e:
