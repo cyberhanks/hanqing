@@ -5,9 +5,14 @@ import os
 # Explicit path so load_dotenv works regardless of CWD
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL  = os.getenv("SUPABASE_URL")
+SUPABASE_KEY  = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
+RESEND_KEY    = os.getenv("RESEND_API_KEY")
+
+# Shared Supabase client (service role — bypasses RLS)
+from supabase import create_client
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 SOURCES = {
     "legislators": "https://www.ly.gov.tw/Pages/List.aspx?nodeid=109",
