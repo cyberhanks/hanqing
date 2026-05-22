@@ -22,12 +22,18 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
 
   // Check if already subscribed to this exact combination
-  const { data: existing } = await supabase
+  let existingQuery = supabase
     .from('subscriptions')
     .select('id')
     .eq('email', email)
-    .eq('politician_id', politician_id ?? null)
-    .maybeSingle()
+
+  if (politician_id) {
+    existingQuery = existingQuery.eq('politician_id', politician_id)
+  } else {
+    existingQuery = existingQuery.is('politician_id', null)
+  }
+
+  const { data: existing } = await existingQuery.maybeSingle()
 
   if (existing) {
     // Already subscribed — return success silently (avoid user enumeration)
