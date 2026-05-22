@@ -22,29 +22,100 @@ INTERP_DATASET   = 6
 PAGE_SIZE = 1000
 
 
-def _fetch_dataset(dataset_id: int, term: int, page: int = 1) -> list[dict]:
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+LY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Encoding": "identity",
+    "Accept": "application/json",
+}
+
+
+def _fetch_dataset(dataset_id: int, term: int, offset: int = 0) -> list[dict]:
+    """抓取單頁資料，透過 term 欄位過濾屆期"""
     try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         params = {
-            "id": dataset_id,
-            "selectTerm": term,
-            "page": page,
-            "limit": PAGE_SIZE,
+            "id":          dataset_id,
+            "filterParam": "",
+            "offset":      offset,
+            "limit":       PAGE_SIZE,
         }
-        r = requests.get(LY_API, params=params, timeout=30, verify=False)
+        r = requests.get(LY_API, params=params, headers=LY_HEADERS, timeout=30, verify=False)
         r.raise_for_status()
-        data = r.json()
-        return data.get("jsonList", []) or []
+        all_items = r.json().get("jsonList", []) or []
+        # 過濾指定屆期
+        return [x for x in all_items if str(x.get("term", "")).strip() == str(term)]
     except Exception as e:
-        logger.warning(f"LY API 失敗 id={dataset_id} term={term}: {e}")
+        logger.warning(f"LY API 失敗 id={dataset_id} offset={offset}: {e}")
         return []
+
+
+def _fetch_all_for_term(dataset_id: int, term: int) -> list[dict]:
+    """分頁抓取所有屆期資料"""
+    results = []
+    offset = 0
+    while True:
+        params = {
+            "id": dataset_id, "filterParam": "",
+            "offset": offset, "limit": PAGE_SIZE,
+        }
+        try:
+            r = requests.get(LY_API, params=params, headers=LY_HEADERS, timeout=30, verify=False)
+            r.raise_for_status()
+            items = r.json().get("jsonList", []) or []
+        except Exception as e:
+            logger.warning(f"LY API 失敗 id={dataset_id} offset={offset}: {e}")
+            break
+
+        matched = [x for x in items if str(x.get("term", "")).strip() == str(term)]
+        results.extend(matched)
+
+        if len(items) < PAGE_SIZE:
+            break   # 最後一頁
+        offset += PAGE_SIZE
+        time.sleep(0.3)
+
+    return results
 
 
 def _get_politician_map() -> dict[str, str]:
     """名字 -> id"""
     res = supabase.from_("politicians").select("id, name").execute()
     return {p["name"]: p["id"] for p in (res.data or [])}
+
+
+def _rows_to_statements(rows: list[dict], term: int, stmt_type: str,
+                         pol_map: dict, source_name: str) -> list[dict]:
+    records = []
+    for r in rows:
+        # 嘗試多個欄位名稱
+        name = (r.get("name") or r.get("委員姓名") or
+                r.get("proposer") or r.get("relDocNum", "")[:4] or "")
+        pid = pol_map.get(name.strip())
+        if not pid:
+            continue
+
+        content = (r.get("content") or r.get("發言內容") or
+                   r.get("billName") or r.get("relDocNum") or
+                   r.get("meetingContent") or "")
+        if len(content) < 5:
+            continue
+
+        pdf_url = r.get("pdfUrl") or r.get("docUrl") or r.get("url")
+        records.append({
+            "politician_id":  pid,
+            "content":        content[:2000],
+            "statement_type": stmt_type,
+            "statement_date": r.get("meetingDate") or r.get("date"),
+            "source_name":    source_name,
+            "source_url":     pdf_url,
+            "term":           term,
+            "session":        _safe_int(r.get("sessionPeriod") or r.get("session")),
+            "committee":      r.get("committee"),
+            "topics":         _extract_topics(content),
+        })
+    return records
 
 
 def collect_speeches(terms: list[int] = TERMS):
@@ -54,50 +125,18 @@ def collect_speeches(terms: list[int] = TERMS):
 
     for term in terms:
         logger.info(f"收集第 {term} 屆發言...")
-        page = 1
-        while True:
-            rows = _fetch_dataset(SPEECH_DATASET, term, page)
-            if not rows:
-                break
+        rows = _fetch_all_for_term(SPEECH_DATASET, term)
+        if not rows:
+            logger.info(f"  第 {term} 屆無資料")
+            continue
 
-            records = []
-            for r in rows:
-                name = r.get("name") or r.get("委員姓名", "")
-                pid = pol_map.get(name)
-                if not pid:
-                    continue
-
-                content = (
-                    r.get("content") or r.get("發言內容") or
-                    r.get("meetingContent") or r.get("meetingDateDesc") or ""
-                )
-                if len(content) < 10:
-                    continue
-
-                records.append({
-                    "politician_id":   pid,
-                    "content":         content[:2000],
-                    "statement_type":  "speech",
-                    "statement_date":  r.get("meetingDate") or r.get("date"),
-                    "source_name":     "立法院公報",
-                    "source_url":      r.get("pdfUrl") or r.get("url"),
-                    "term":            term,
-                    "session":         _safe_int(r.get("session") or r.get("屆別")),
-                    "committee":       r.get("committee") or r.get("委員會"),
-                })
-
-            if records:
-                # 批次 upsert（以 politician_id + content 前 100 字去重）
-                res = supabase.from_("statements").upsert(
-                    records, on_conflict="politician_id,statement_date,statement_type"
-                ).execute()
-                total_inserted += len(records)
-                logger.info(f"  第 {term} 屆 p{page}: 新增 {len(records)} 筆發言")
-
-            if len(rows) < PAGE_SIZE:
-                break
-            page += 1
-            time.sleep(0.5)
+        records = _rows_to_statements(rows, term, "speech", pol_map, "立法院公報")
+        if records:
+            supabase.from_("statements").upsert(
+                records, on_conflict="politician_id,statement_date,statement_type"
+            ).execute()
+            total_inserted += len(records)
+            logger.info(f"  第 {term} 屆: {len(rows)} 筆原始 → {len(records)} 筆入庫")
 
     logger.success(f"發言收集完成，共 {total_inserted} 筆")
     return total_inserted
@@ -110,50 +149,18 @@ def collect_interpellations(terms: list[int] = TERMS):
 
     for term in terms:
         logger.info(f"收集第 {term} 屆質詢...")
-        page = 1
-        while True:
-            rows = _fetch_dataset(INTERP_DATASET, term, page)
-            if not rows:
-                break
+        rows = _fetch_all_for_term(INTERP_DATASET, term)
+        if not rows:
+            logger.info(f"  第 {term} 屆無資料")
+            continue
 
-            records = []
-            for r in rows:
-                name = r.get("name") or r.get("委員姓名", "")
-                pid = pol_map.get(name)
-                if not pid:
-                    continue
-
-                content = (
-                    r.get("content") or r.get("質詢內容") or
-                    r.get("interpellation") or r.get("subject") or ""
-                )
-                if len(content) < 5:
-                    continue
-
-                records.append({
-                    "politician_id":   pid,
-                    "content":         content[:2000],
-                    "statement_type":  "interpellation",
-                    "statement_date":  r.get("date") or r.get("質詢日期"),
-                    "source_name":     "立法院質詢紀錄",
-                    "source_url":      r.get("pdfUrl") or r.get("url"),
-                    "term":            term,
-                    "session":         _safe_int(r.get("session")),
-                    "committee":       r.get("committee"),
-                    "topics":          _extract_topics(content),
-                })
-
-            if records:
-                res = supabase.from_("statements").upsert(
-                    records, on_conflict="politician_id,statement_date,statement_type"
-                ).execute()
-                total_inserted += len(records)
-                logger.info(f"  第 {term} 屆 p{page}: 新增 {len(records)} 筆質詢")
-
-            if len(rows) < PAGE_SIZE:
-                break
-            page += 1
-            time.sleep(0.5)
+        records = _rows_to_statements(rows, term, "interpellation", pol_map, "立法院質詢紀錄")
+        if records:
+            supabase.from_("statements").upsert(
+                records, on_conflict="politician_id,statement_date,statement_type"
+            ).execute()
+            total_inserted += len(records)
+            logger.info(f"  第 {term} 屆: {len(rows)} 筆原始 → {len(records)} 筆入庫")
 
     logger.success(f"質詢收集完成，共 {total_inserted} 筆")
     return total_inserted

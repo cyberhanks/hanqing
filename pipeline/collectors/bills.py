@@ -19,19 +19,40 @@ PROPOSE_DATASET = 14
 COSIGN_DATASET  = 16
 
 
-def _fetch(dataset_id: int, term: int, page: int = 1) -> list[dict]:
-    try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        r = requests.get(LY_API, params={
-            "id": dataset_id, "selectTerm": term,
-            "page": page, "limit": PAGE_SIZE,
-        }, timeout=30, verify=False)
-        r.raise_for_status()
-        return r.json().get("jsonList", []) or []
-    except Exception as e:
-        logger.warning(f"LY API 失敗 id={dataset_id} term={term}: {e}")
-        return []
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+LY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Encoding": "identity",
+    "Accept": "application/json",
+}
+
+
+def _fetch_all_for_term(dataset_id: int, term: int) -> list[dict]:
+    results = []
+    offset = 0
+    while True:
+        try:
+            r = requests.get(LY_API, params={
+                "id": dataset_id, "filterParam": "",
+                "offset": offset, "limit": PAGE_SIZE,
+            }, headers=LY_HEADERS, timeout=30, verify=False)
+            r.raise_for_status()
+            items = r.json().get("jsonList", []) or []
+        except Exception as e:
+            logger.warning(f"LY API 失敗 id={dataset_id} offset={offset}: {e}")
+            break
+
+        matched = [x for x in items if str(x.get("term", "")).strip() == str(term)]
+        results.extend(matched)
+
+        if len(items) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+        time.sleep(0.3)
+
+    return results
 
 
 def _get_politician_map() -> dict[str, str]:
@@ -70,83 +91,52 @@ def _upsert_bill(row: dict, term: int) -> str | None:
     return existing.data["id"] if existing.data else None
 
 
+def _process_bill_rows(rows: list[dict], term: int, pol_map: dict, role: str) -> int:
+    total = 0
+    for r in rows:
+        bill_id = _upsert_bill(r, term)
+        if not bill_id:
+            continue
+        name_field = "proposer" if role == "proposer" else "cosigner"
+        names = _parse_names(
+            r.get(name_field) or r.get("relDocNum", "")[:4] or r.get("name") or ""
+        )
+        for name in names:
+            pid = pol_map.get(name)
+            if not pid:
+                continue
+            supabase.from_("bill_politicians").upsert(
+                {"bill_id": bill_id, "politician_id": pid, "role": role},
+                on_conflict="bill_id,politician_id"
+            ).execute()
+            total += 1
+    return total
+
+
 def collect_proposals(terms: list[int] = TERMS):
-    """收集委員提案，存入 bills + bill_politicians"""
     pol_map = _get_politician_map()
     total = 0
-
     for term in terms:
         logger.info(f"收集第 {term} 屆提案...")
-        page = 1
-        while True:
-            rows = _fetch(PROPOSE_DATASET, term, page)
-            if not rows:
-                break
-
-            for r in rows:
-                bill_id = _upsert_bill(r, term)
-                if not bill_id:
-                    continue
-
-                # 提案人可能是逗號分隔的多人
-                proposers = _parse_names(
-                    r.get("proposer") or r.get("提案人") or r.get("name") or ""
-                )
-                for name in proposers:
-                    pid = pol_map.get(name)
-                    if not pid:
-                        continue
-                    supabase.from_("bill_politicians").upsert(
-                        {"bill_id": bill_id, "politician_id": pid, "role": "proposer"},
-                        on_conflict="bill_id,politician_id"
-                    ).execute()
-                    total += 1
-
-            if len(rows) < PAGE_SIZE:
-                break
-            page += 1
-            time.sleep(0.5)
-
+        rows = _fetch_all_for_term(PROPOSE_DATASET, term)
+        if rows:
+            n = _process_bill_rows(rows, term, pol_map, "proposer")
+            total += n
+            logger.info(f"  第 {term} 屆: {len(rows)} 筆提案 → {n} 筆關聯")
     logger.success(f"提案收集完成，共 {total} 筆政治人物-法案關聯")
     return total
 
 
 def collect_cosigners(terms: list[int] = TERMS):
-    """收集委員連署"""
     pol_map = _get_politician_map()
     total = 0
-
     for term in terms:
         logger.info(f"收集第 {term} 屆連署...")
-        page = 1
-        while True:
-            rows = _fetch(COSIGN_DATASET, term, page)
-            if not rows:
-                break
-
-            for r in rows:
-                bill_id = _upsert_bill(r, term)
-                if not bill_id:
-                    continue
-
-                cosigners = _parse_names(
-                    r.get("cosigner") or r.get("連署人") or r.get("name") or ""
-                )
-                for name in cosigners:
-                    pid = pol_map.get(name)
-                    if not pid:
-                        continue
-                    supabase.from_("bill_politicians").upsert(
-                        {"bill_id": bill_id, "politician_id": pid, "role": "cosigner"},
-                        on_conflict="bill_id,politician_id"
-                    ).execute()
-                    total += 1
-
-            if len(rows) < PAGE_SIZE:
-                break
-            page += 1
-            time.sleep(0.5)
-
+        rows = _fetch_all_for_term(COSIGN_DATASET, term)
+        if rows:
+            n = _process_bill_rows(rows, term, pol_map, "cosigner")
+            total += n
+            logger.info(f"  第 {term} 屆: {len(rows)} 筆連署 → {n} 筆關聯")
     logger.success(f"連署收集完成，共 {total} 筆政治人物-法案關聯")
     return total
 
