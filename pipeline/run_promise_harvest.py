@@ -168,7 +168,7 @@ def run():
                 "status":        "active",
                 "deadline":      deadline,
                 "source_url":    p.get("source_url", ""),
-                "confidence":    p.get("confidence", 0.6),
+                "confidence":    int(round(p.get("confidence", 0.6) * 100)),
                 "verified_by":   "auto:harvest",
             }
             try:

@@ -11,6 +11,17 @@ export interface Politician {
   region?: string
   avatar_url?: string
   trust_score: number
+  consistency_score?: number
+  fulfill_rate?: number
+  response_rate?: number
+  total_promises?: number
+  fulfilled_count?: number
+  broken_count?: number
+  stalled_count?: number
+  total_votes?: number
+  absent_count?: number
+  data_source?: string
+  last_synced_at?: string
   term_start?: string
   term_end?: string
   bio?: string
@@ -29,9 +40,54 @@ export interface Promise {
   source_date?: string
   confidence?: number
   evidence_url?: string
+  evidence_title?: string
+  verification_hint?: string
+  verified_at?: string
+  keywords?: string[]
+  scope?: string
   created_at: string
   updated_at: string
   politician?: Politician
+}
+
+export interface Donation {
+  id: string
+  politician_id: string
+  donor_name: string
+  amount: number
+  donation_date?: string
+  donor_industry?: string
+  report_year: number
+  source_url?: string
+}
+
+export interface AssetDeclaration {
+  id: string
+  politician_id: string
+  declared_year: number
+  total_assets?: number
+  total_liabilities?: number
+  asset_detail?: Record<string, unknown>
+  declared_at?: string
+  source_url?: string
+}
+
+export interface Subscription {
+  id: string
+  email: string
+  politician_id?: string
+  topic?: string
+  created_at: string
+}
+
+export interface ApiKey {
+  id: string
+  key_hash: string
+  label?: string
+  daily_limit: number
+  usage_today: number
+  last_used_at?: string
+  created_at: string
 }
 
 export interface Statement {

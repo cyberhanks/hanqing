@@ -7,6 +7,9 @@ import { getPromises } from '@/lib/api/promises'
 import { PARTY_SHORT, PARTY_COLORS } from '@/lib/utils/party'
 import { clsx } from 'clsx'
 import TrustMeter from '@/components/politician/TrustMeter'
+import ConsistencyScore from '@/components/politician/ConsistencyScore'
+import FulfillRateChart from '@/components/stats/FulfillRateChart'
+import SubscribeForm from '@/components/ui/SubscribeForm'
 import PromiseTimeline from '@/components/promise/PromiseTimeline'
 import { VoteRecord } from '@/components/vote/VoteRecord'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
@@ -67,14 +70,30 @@ export default async function PoliticianPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* Trust meter */}
-      <div className="bg-white/60 border border-ink/10 rounded-lg p-5 mb-8">
-        <div className="flex items-center justify-between mb-3">
+      {/* Trust meter + scores */}
+      <div className="bg-white/60 border border-ink/10 rounded-lg p-5 mb-8 space-y-4">
+        <div className="flex items-center justify-between mb-1">
           <span className="text-sm font-medium text-ink">信任指數</span>
           <span className="font-mono text-lg font-bold text-ink">{p.trust_score}</span>
         </div>
         <TrustMeter score={p.trust_score} showLabel={false} />
-        <div className="grid grid-cols-4 gap-2 mt-4 text-center">
+
+        {/* Consistency score */}
+        {p.consistency_score != null && (
+          <ConsistencyScore score={p.consistency_score} />
+        )}
+
+        {/* Fulfill rate chart */}
+        {(statusCounts.fulfilled + statusCounts.broken + statusCounts.stalled + statusCounts.active) > 0 && (
+          <FulfillRateChart
+            fulfilled={statusCounts.fulfilled}
+            broken={statusCounts.broken}
+            stalled={statusCounts.stalled}
+            active={statusCounts.active}
+          />
+        )}
+
+        <div className="grid grid-cols-4 gap-2 text-center">
           {[
             { label: '已兌現', count: statusCounts.fulfilled, color: 'text-status-fulfilled' },
             { label: '進行中', count: statusCounts.active, color: 'text-status-active' },
@@ -87,6 +106,11 @@ export default async function PoliticianPage({ params }: PageProps) {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Subscribe */}
+      <div className="mb-8">
+        <SubscribeForm politicianId={p.id} politicianName={p.name} />
       </div>
 
       {/* 分頁：承諾 / 投票 */}

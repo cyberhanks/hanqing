@@ -5,6 +5,7 @@ import SearchBox from '@/components/ui/SearchBox'
 const NAV = [
   { href: '/politicians', label: '政治人物' },
   { href: '/promises',    label: '承諾追蹤' },
+  { href: '/leaderboard', label: '排行榜' },
   { href: '/events',      label: '爭議事件' },
 ]
 
