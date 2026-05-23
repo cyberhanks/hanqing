@@ -105,12 +105,36 @@ def update_all_scores():
             score = result.get("score", 50)
             fulfill_rate = result.get("fulfill_rate", 0)
 
+            # 取出席率與查核數作為加權調整
+            extra = db.table("politicians")\
+                .select("attendance_rate,factcheck_false_count,factcheck_count")\
+                .eq("id", p["id"]).single().execute().data or {}
+
+            attendance     = extra.get("attendance_rate") or 50   # 預設 50%
+            false_cnt      = extra.get("factcheck_false_count") or 0
+            check_cnt      = extra.get("factcheck_count") or 0
+
+            # 查核懲罰：每一筆「錯誤/誤導」扣 3 分，最多扣 15 分
+            factcheck_penalty = min(false_cnt * 3, 15)
+
+            # 出席率加成/懲罰（標準 75%：中立；>85% +3；<60% -5）
+            attendance_adj = 3 if attendance >= 85 else (-5 if attendance < 60 else 0)
+
+            trust = round(
+                score * 0.5 +
+                fulfill_rate * 0.3 +
+                min(attendance, 100) * 0.2 -
+                factcheck_penalty +
+                attendance_adj
+            )
+            trust = max(0, min(100, trust))
+
             db.table("politicians").update({
                 "consistency_score": score,
                 "fulfill_rate":      fulfill_rate,
-                "trust_score":       round((score * 0.6 + fulfill_rate * 0.4)),
+                "trust_score":       trust,
             }).eq("id", p["id"]).execute()
 
-            logger.success(f"[OK] {p['name']}：一致性 {score}，兌現率 {fulfill_rate}%")
+            logger.success(f"[OK] {p['name']}：信任 {trust}（一致性 {score}, 兌現率 {fulfill_rate}%, 出席率 {attendance}%, 查核扣 {factcheck_penalty}）")
         except Exception as e:
             logger.error(f"✗ {p['name']} 分數更新失敗：{e}")
