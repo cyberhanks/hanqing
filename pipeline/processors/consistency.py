@@ -94,7 +94,18 @@ def calculate_consistency_score(politician_id: str) -> dict:
 
 
 def update_all_scores():
-    """更新所有政治人物的分數（每週執行）"""
+    """更新所有政治人物的分數（每週執行）
+
+    7 維度信任分數公式（v5）：
+      consistency_score  × 25%   AI 分析言行一致性
+      fulfill_rate       × 20%   承諾兌現率（客觀）
+      attendance_rate    × 15%   立院出席率（客觀）
+      external_rating    × 15%   NGO 外部評鑑（最客觀）
+      sentiment_score    × 10%   媒體輿情
+      voting_align_rate  × 10%   投票參與率
+      vote_share_trend   ×  5%   得票趨勢（正向加分）
+      factcheck_penalty  最多扣 15 分
+    """
     db = get_client()
     politicians = db.table("politicians").select("id, name").execute().data or []
     logger.info(f"開始更新 {len(politicians)} 位政治人物的分數")
@@ -102,39 +113,65 @@ def update_all_scores():
     for p in politicians:
         try:
             result = calculate_consistency_score(p["id"])
-            score = result.get("score", 50)
+            score        = result.get("score", 50)
             fulfill_rate = result.get("fulfill_rate", 0)
 
-            # 取出席率與查核數作為加權調整
-            extra = db.table("politicians")\
-                .select("attendance_rate,factcheck_false_count,factcheck_count")\
-                .eq("id", p["id"]).single().execute().data or {}
+            # 取多維度欄位
+            extra = db.table("politicians").select(
+                "attendance_rate,factcheck_false_count,factcheck_count,"
+                "external_rating,sentiment_score,voting_align_rate,vote_share_trend"
+            ).eq("id", p["id"]).single().execute().data or {}
 
-            attendance     = extra.get("attendance_rate") or 50   # 預設 50%
-            false_cnt      = extra.get("factcheck_false_count") or 0
-            check_cnt      = extra.get("factcheck_count") or 0
+            attendance      = float(extra.get("attendance_rate")   or 70)
+            false_cnt       = int(extra.get("factcheck_false_count") or 0)
+            external_rating = float(extra.get("external_rating")    or 60)
+            sentiment_score = float(extra.get("sentiment_score")    or 60)
+            align_rate      = float(extra.get("voting_align_rate")  or 80)
+            vs_trend        = float(extra.get("vote_share_trend")   or 0)
 
-            # 查核懲罰：每一筆「錯誤/誤導」扣 3 分，最多扣 15 分
+            # 事實查核懲罰：每筆錯誤/誤導扣 3 分，上限 15 分
             factcheck_penalty = min(false_cnt * 3, 15)
 
-            # 出席率加成/懲罰（標準 75%：中立；>85% +3；<60% -5）
-            attendance_adj = 3 if attendance >= 85 else (-5 if attendance < 60 else 0)
+            # 得票趨勢轉換：trend ∈ [-20,+20] → [0,10] 分貢獻
+            trend_score = max(0, min(10, (vs_trend + 10) / 2))
 
+            # 7 維度加權合成
             trust = round(
-                score * 0.5 +
-                fulfill_rate * 0.3 +
-                min(attendance, 100) * 0.2 -
-                factcheck_penalty +
-                attendance_adj
+                score           * 0.25 +   # AI 言行一致性
+                fulfill_rate    * 0.20 +   # 承諾兌現率
+                attendance      * 0.15 +   # 出席率
+                external_rating * 0.15 +   # NGO 外部評鑑
+                sentiment_score * 0.10 +   # 媒體輿情
+                align_rate      * 0.10 +   # 黨紀投票一致率
+                trend_score     * 0.05 -   # 得票趨勢
+                factcheck_penalty           # 事實查核懲罰
             )
             trust = max(0, min(100, trust))
+
+            # 分項明細（存入 score_breakdown JSONB）
+            breakdown = {
+                "consistency":       score,
+                "fulfill_rate":      fulfill_rate,
+                "attendance":        attendance,
+                "external_rating":   external_rating,
+                "sentiment":         sentiment_score,
+                "voting_align":      align_rate,
+                "vote_trend":        vs_trend,
+                "factcheck_penalty": factcheck_penalty,
+            }
 
             db.table("politicians").update({
                 "consistency_score": score,
                 "fulfill_rate":      fulfill_rate,
                 "trust_score":       trust,
+                "score_breakdown":   breakdown,
             }).eq("id", p["id"]).execute()
 
-            logger.success(f"[OK] {p['name']}：信任 {trust}（一致性 {score}, 兌現率 {fulfill_rate}%, 出席率 {attendance}%, 查核扣 {factcheck_penalty}）")
+            logger.success(
+                f"[OK] {p['name']}：信任 {trust} "
+                f"(一致 {score}|兌現 {fulfill_rate}|出席 {attendance}|"
+                f"外評 {external_rating}|輿情 {sentiment_score}|"
+                f"黨紀 {align_rate}|扣 {factcheck_penalty})"
+            )
         except Exception as e:
-            logger.error(f"✗ {p['name']} 分數更新失敗：{e}")
+            logger.error(f"X {p['name']} 分數更新失敗：{e}")
